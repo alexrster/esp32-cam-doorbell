@@ -151,3 +151,11 @@ void camera_loop(unsigned long now)
     log_i("Face recognized!");
   }
 }
+
+void camera_thread_func(void*)
+{
+  camera_setup();
+
+  while(true)
+    camera_loop(millis());
+}

@@ -3,7 +3,7 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include "version.h"
-#include "camera.cpp"
+// #include "camera.cpp"
 
 #define WIFI_SSID                     "qx.zone"
 #define WIFI_PASSPHRASE               "1234Qwer-"
@@ -28,19 +28,30 @@
 #define MQTT_VERSION_TOPIC            MQTT_CLIENT_ID "/version"
 #define MQTT_RESTART_CONTROL_TOPIC    MQTT_CLIENT_ID "/restart"
 
+void onMqttMessage(char* topic, byte* payload, unsigned int length);
+void camera_thread_func(void*);
+
+void camera_setup();
+void camera_loop(unsigned long now);
+void faceid_cleanup();
+
 WiFiClient wifiClient;
 PubSubClient pubSubClient(wifiClient);
 static const String PubSubRestartControlTopic = String(MQTT_RESTART_CONTROL_TOPIC);
+TaskHandle_t camTaskHndl;
 
 unsigned long 
   now = 0,
   lastWifiOnline = 0,
   lastPubSubReconnectAttempt = 0;
 
-void onMqttMessage(char* topic, byte* payload, unsigned int length);
+bool
+  otaMode = false;
 
 void otaStarted()
-{ }
+{ 
+  otaMode = true;
+}
 
 void otaEnd()
 { 
@@ -99,16 +110,41 @@ void pubSubClientLoop()
   pubSubClient.loop();
 }
 
-void setup()
-{
-  wifi_setup();
-  camera_setup();
+bool wifiLoop() {
+  if (WiFi.status() != WL_CONNECTED) {
+    if(now - lastWifiOnline > WIFI_WATCHDOG_MILLIS) ESP.restart();
+
+    return false;
+  }
+  
+  lastWifiOnline = now;
+  return true;
 }
 
 void loop()
 {
   now = millis();
-  camera_loop(now);
+  
+  if (wifiLoop()) {
+    pubSubClientLoop();
+    ArduinoOTA.handle();
+  }
+}
+
+void setup()
+{
+  now = millis();
+
+  wifi_setup();
+
+  xTaskCreatePinnedToCore(
+    camera_thread_func, /* Function to implement the task */
+    "CAMERA_TASK", /* Name of the task */
+    10000,  /* Stack size in words */
+    NULL,  /* Task input parameter */
+    0,  /* Priority of the task */
+    &camTaskHndl,  /* Task handle. */
+    1); /* Core where the task should run */
 }
 
 void onMqttMessage(char* topic, byte* payload, unsigned int length)
