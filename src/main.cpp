@@ -40,7 +40,7 @@ void faceid_cleanup();
 
 WiFiClient wifiClient;
 PubSubClient pubSubClient(wifiClient);
-TaskHandle_t camTaskHndl;
+TaskHandle_t camTaskHndl, svcTaskHndl;
 
 static const String PubSubRestartControlTopic = String(MQTT_RESTART_CONTROL_TOPIC);
 
@@ -69,6 +69,7 @@ void otaError(ota_error_t)
 
 void wifi_setup()
 {
+  log_i("WiFi setup");
   WiFi.enableAP(false);
   WiFi.enableSTA(true);
   WiFi.setHostname(WIFI_HOSTNAME);
@@ -76,12 +77,14 @@ void wifi_setup()
   WiFi.setAutoReconnect(true);
   WiFi.begin(WIFI_SSID, WIFI_PASSPHRASE);
 
+  log_i("OTA setup");
   ArduinoOTA.onStart(otaStarted);
   ArduinoOTA.onEnd(otaEnd);
   ArduinoOTA.onError(otaError);
   ArduinoOTA.setRebootOnSuccess(true);
   ArduinoOTA.begin();
 
+  log_i("PubSub setup");
   pubSubClient.setCallback(onMqttMessage);
   pubSubClient.setServer(MQTT_SERVER_NAME, MQTT_SERVER_PORT);
 
@@ -125,7 +128,12 @@ bool wifiLoop() {
   return true;
 }
 
-void loop()
+void loop() 
+{
+  delay(1);
+}
+
+inline void services_loop()
 {
   now = millis();
   
@@ -135,20 +143,21 @@ void loop()
   }
 }
 
-void setup()
+void services_thread_func(void*)
 {
-  now = millis();
-
+  log_i("Services thread started on core #%u", xPortGetCoreID());
   wifi_setup();
 
-  xTaskCreatePinnedToCore(
-    camera_thread_func, /* Function to implement the task */
-    "CAMERA_TASK", /* Name of the task */
-    10000,  /* Stack size in words */
-    NULL,  /* Task input parameter */
-    0,  /* Priority of the task */
-    &camTaskHndl,  /* Task handle. */
-    1); /* Core where the task should run */
+  log_i("Services setup completed");
+  while (true) {
+    services_loop();
+  }
+}
+
+void setup()
+{
+  xTaskCreatePinnedToCore(services_thread_func, "SERVICES_TASK", 10000, NULL, 0, &svcTaskHndl, 0);
+  xTaskCreatePinnedToCore(camera_thread_func, "CAMERA_TASK", 10000, NULL, 0, &camTaskHndl, 1);
 }
 
 void onMqttMessage(char* topic, byte* payload, unsigned int length)

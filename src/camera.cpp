@@ -101,6 +101,7 @@ void faceid_cleanup()
 
 void camera_setup()
 {
+  log_i("Camera setup");
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -154,8 +155,10 @@ void camera_loop(unsigned long now)
 
 void camera_thread_func(void*)
 {
+  log_i("Camera thread started");
   camera_setup();
 
+  log_i("Camera setup completed");
   while(true)
     camera_loop(millis());
 }
