@@ -1,0 +1,184 @@
+#include "esp_camera.h"
+#include <WiFi.h>
+#include "Arduino.h"
+#include "fb_gfx.h"
+#include "soc/soc.h" //disable brownout problems
+#include "soc/rtc_cntl_reg.h"  //disable brownout problems
+#include <ESPAsyncWebServer.h>
+// #include <ArduinoOTA.h>
+
+//Replace with your network credentials
+const char* ssid = "qx.zone";
+const char* password = "1234Qwer-";
+const char* hostname = "doorbell-cam-01";
+
+// #define PART_BOUNDARY "frame"
+#define PART_BOUNDARY "123456789000000000000987654321"
+
+#define CAMERA_MODEL_AI_THINKER
+#ifdef CAMERA_MODEL_AI_THINKER
+  #define PWDN_GPIO_NUM     32
+  #define RESET_GPIO_NUM    -1
+  #define XCLK_GPIO_NUM      0
+  #define SIOD_GPIO_NUM     26
+  #define SIOC_GPIO_NUM     27
+  
+  #define Y9_GPIO_NUM       35
+  #define Y8_GPIO_NUM       34
+  #define Y7_GPIO_NUM       39
+  #define Y6_GPIO_NUM       36
+  #define Y5_GPIO_NUM       21
+  #define Y4_GPIO_NUM       19
+  #define Y3_GPIO_NUM       18
+  #define Y2_GPIO_NUM        5
+  #define VSYNC_GPIO_NUM    25
+  #define HREF_GPIO_NUM     23
+  #define PCLK_GPIO_NUM     22
+#else
+  #error "Camera model not selected"
+#endif
+
+const char* _STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=" PART_BOUNDARY;
+const char* _STREAM_BOUNDARY = "\r\n\r\n--" PART_BOUNDARY "\r\n";
+const char* _STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n";
+
+AsyncWebServer server(80);
+
+camera_fb_t *fb = NULL;
+unsigned long frameIndex = 0, frameMillis = 0;
+
+camera_fb_t* camera_capture_next_frame(camera_fb_t* frame) {
+  if (frame != NULL) {
+    esp_camera_fb_return(frame);
+  }
+
+  frameIndex++;
+  frameMillis = millis();
+
+  log_d("Start capture camera frame #%d", frameIndex);
+  frame = esp_camera_fb_get();
+
+  log_d("Capture camera frame #%d complete", frameIndex);
+  if (!frame || !frame->len) {
+    log_e("Failed to capture frame #%d", frameIndex);
+    frame = NULL;
+    return frame;
+  }
+
+  log_d("Successfully captured frame #%d: %dx%d, size=%d, format=%d", frameIndex, frame->width, frame->height, frame->len, frame->format);
+  return frame;
+}
+
+size_t http_chunk_handler(uint8_t *buffer, size_t maxLen, size_t index) {
+  if (fb != NULL && index >= fb->len) {
+    log_d("Finished sending frame #%d: size=%d", frameIndex, fb->len);
+    index = 0;
+  }
+
+  char *bufPtr = (char*)buffer;
+  if (index == 0) {
+    if (fb) {
+      fb = camera_capture_next_frame(fb);
+      if (!fb) return 0;
+    }
+
+    int len = sprintf(bufPtr, _STREAM_BOUNDARY);
+    maxLen -= len;
+    bufPtr += len;
+
+    len = sprintf(bufPtr, _STREAM_PART, fb->len);
+    maxLen -= len;
+    bufPtr += len;
+  }
+  
+  if (fb->len - index <= maxLen) {
+    log_d("Sending last chunk of frame #%d: size=%d, chunk size=%d", frameIndex, fb->len, fb->len - index);
+    bcopy(fb->buf + index, bufPtr, fb->len - index);
+    return fb->len - index;
+  }
+  else {
+    log_d("Sending next chunk of frame #%d: index=%d, size=%d, chunk size=%d", frameIndex, index, fb->len, maxLen);
+    bcopy(fb->buf + index, bufPtr, maxLen);
+    return maxLen;
+  }
+}
+
+void http_request_handler(AsyncWebServerRequest *req){
+  log_i("Received request from: %s", req->client()->remoteIP().toString().c_str());
+  AsyncWebServerResponse *resp = req->beginChunkedResponse(_STREAM_CONTENT_TYPE, http_chunk_handler);
+  resp->setCode(200);
+
+  req->send(resp);
+}
+
+void startCameraServer(){
+  server.on("/", HTTP_GET, http_request_handler);
+  server.onNotFound([](AsyncWebServerRequest *request){
+    request->send(404);
+  });
+
+  server.begin();
+}
+
+void setup() {
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); //disable brownout detector
+ 
+  camera_config_t config;
+  config.ledc_channel = LEDC_CHANNEL_0;
+  config.ledc_timer = LEDC_TIMER_0;
+  config.pin_d0 = Y2_GPIO_NUM;
+  config.pin_d1 = Y3_GPIO_NUM;
+  config.pin_d2 = Y4_GPIO_NUM;
+  config.pin_d3 = Y5_GPIO_NUM;
+  config.pin_d4 = Y6_GPIO_NUM;
+  config.pin_d5 = Y7_GPIO_NUM;
+  config.pin_d6 = Y8_GPIO_NUM;
+  config.pin_d7 = Y9_GPIO_NUM;
+  config.pin_xclk = XCLK_GPIO_NUM;
+  config.pin_pclk = PCLK_GPIO_NUM;
+  config.pin_vsync = VSYNC_GPIO_NUM;
+  config.pin_href = HREF_GPIO_NUM;
+  config.pin_sscb_sda = SIOD_GPIO_NUM;
+  config.pin_sscb_scl = SIOC_GPIO_NUM;
+  config.pin_pwdn = PWDN_GPIO_NUM;
+  config.pin_reset = RESET_GPIO_NUM;
+  config.xclk_freq_hz = 20000000;
+  config.pixel_format = PIXFORMAT_JPEG; 
+  
+  if(psramFound()){
+    // config.frame_size = FRAMESIZE_UXGA;
+    config.frame_size = FRAMESIZE_SVGA;
+    config.jpeg_quality = 10;
+    config.fb_count = 2;
+  } else {
+    config.frame_size = FRAMESIZE_SVGA;
+    config.jpeg_quality = 12;
+    config.fb_count = 1;
+  }
+
+  // config.frame_size = FRAMESIZE_SVGA;
+  // config.jpeg_quality = 10;
+  // config.fb_count = 2;
+  
+  // Camera init
+  esp_err_t err = esp_camera_init(&config);
+  if (err != ESP_OK) {
+    log_e("Camera init failed with error 0x%x", err);
+    return;
+  }
+
+  WiFi.setHostname(hostname);
+  WiFi.begin(ssid, password);
+
+  // ArduinoOTA.setRebootOnSuccess(true);
+  // ArduinoOTA.begin();
+
+  startCameraServer();
+}
+
+void loop() {
+  // if (WiFi.status() == WL_CONNECTED) {
+  //   ArduinoOTA.handle();
+  // }
+  delay(1);
+}
