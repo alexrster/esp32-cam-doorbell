@@ -3,7 +3,8 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include "version.h"
-// #include "camera.cpp"
+
+#define DOORBELL_PIN                  13
 
 #define WIFI_SSID                     "qx.zone"
 #define WIFI_PASSPHRASE               "1234Qwer-"
@@ -24,6 +25,8 @@
 #define MQTT_CLIENT_ID                WIFI_HOSTNAME
 #endif
 
+#define MQTT_MOTION_TOPIC             MQTT_CLIENT_ID "/motion"
+#define MQTT_DOORBELL_TOPIC           MQTT_CLIENT_ID "/doorbell"
 #define MQTT_STATUS_TOPIC             MQTT_CLIENT_ID "/status"
 #define MQTT_VERSION_TOPIC            MQTT_CLIENT_ID "/version"
 #define MQTT_RESTART_CONTROL_TOPIC    MQTT_CLIENT_ID "/restart"
@@ -37,8 +40,9 @@ void faceid_cleanup();
 
 WiFiClient wifiClient;
 PubSubClient pubSubClient(wifiClient);
-static const String PubSubRestartControlTopic = String(MQTT_RESTART_CONTROL_TOPIC);
 TaskHandle_t camTaskHndl;
+
+static const String PubSubRestartControlTopic = String(MQTT_RESTART_CONTROL_TOPIC);
 
 unsigned long 
   now = 0,
